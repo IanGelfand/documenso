@@ -11,6 +11,7 @@ import { useEmbedSigningContext } from '~/components/embed/embed-signing-context
 
 import { BrandingLogo } from '../branding-logo';
 import EnvelopeSignerForm from '../envelope-signing/envelope-signer-form';
+import { EnvelopeSignerMobileStepper } from '../envelope-signing/envelope-signer-mobile-stepper';
 import { EnvelopeSignerCompleteDialog } from '../envelope-signing/envelope-signing-complete-dialog';
 import { useRequiredEnvelopeSigningContext } from './envelope-signing-provider';
 
@@ -29,6 +30,18 @@ export const DocumentSigningMobileWidget = () => {
       setIsExpanded(true);
     }
   }, []);
+
+  const isFieldStepperEnabled = recipient.role === RecipientRole.SIGNER || recipient.role === RecipientRole.APPROVER;
+
+  if (isFieldStepperEnabled) {
+    return (
+      <div className="pointer-events-none fixed right-0 bottom-0 left-0 z-50 flex justify-center px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:px-4 sm:pb-6">
+        <div className="slide-in-from-bottom-8 pointer-events-auto w-full max-w-[760px] animate-in overflow-hidden rounded-xl border-2 border-primary/60 bg-card shadow-[0_-12px_32px_-8px_rgb(0_0_0/0.45)] duration-500">
+          <EnvelopeSignerMobileStepper />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="pointer-events-none fixed right-0 bottom-0 left-0 z-50 flex justify-center px-2 pb-2 sm:px-4 sm:pb-6">

@@ -4,10 +4,6 @@ import {
   type PageRenderData,
   useCurrentEnvelopeRender,
 } from '@documenso/lib/client-only/providers/envelope-render-provider';
-import { useOptionalSession } from '@documenso/lib/client-only/providers/session';
-import { DIRECT_TEMPLATE_RECIPIENT_EMAIL } from '@documenso/lib/constants/direct-templates';
-import { isBase64Image } from '@documenso/lib/constants/signatures';
-import type { TRecipientActionAuth } from '@documenso/lib/types/document-auth';
 import type { TEnvelope } from '@documenso/lib/types/envelope';
 import { ZFullFieldSchema } from '@documenso/lib/types/field';
 import { renderStaticContents } from '@documenso/lib/universal/content-renderer/render-static-contents';
@@ -20,43 +16,28 @@ import { renderField } from '@documenso/lib/universal/field-renderer/render-fiel
 import { isFieldUnsignedAndRequired } from '@documenso/lib/utils/advanced-fields-helpers';
 import { areContentsImprinted } from '@documenso/lib/utils/envelope';
 import { getClientSideFieldTranslations } from '@documenso/lib/utils/fields';
-import { extractFullInitials } from '@documenso/lib/utils/recipient-formatter';
-import type { TSignEnvelopeFieldValue } from '@documenso/trpc/server/envelope-router/sign-envelope-field.types';
 import { EnvelopeRecipientFieldTooltip } from '@documenso/ui/components/document/envelope-recipient-field-tooltip';
 import { EnvelopeFieldToolTip } from '@documenso/ui/components/field/envelope-field-tooltip';
-import { useToast } from '@documenso/ui/primitives/use-toast';
 import { Trans, useLingui } from '@lingui/react/macro';
-import { type Field, FieldType, type Recipient, RecipientRole, type Signature, SigningStatus } from '@prisma/client';
+import { type Field, type Recipient, RecipientRole, type Signature, SigningStatus } from '@prisma/client';
 import type Konva from 'konva';
 import type { KonvaEventObject } from 'konva/lib/Node';
 import { useEffect, useMemo, useRef } from 'react';
-import { match } from 'ts-pattern';
 
-import { useEmbedSigningContext } from '~/components/embed/embed-signing-context';
-import { handleCheckboxFieldClick } from '~/utils/field-signing/checkbox-field';
-import { handleDropdownFieldClick } from '~/utils/field-signing/dropdown-field';
-import { handleEmailFieldClick } from '~/utils/field-signing/email-field';
-import { handleInitialsFieldClick } from '~/utils/field-signing/initial-field';
-import { handleNameFieldClick } from '~/utils/field-signing/name-field';
-import { handleNumberFieldClick } from '~/utils/field-signing/number-field';
-import { handleSignatureFieldClick } from '~/utils/field-signing/signature-field';
-import { handleTextFieldClick } from '~/utils/field-signing/text-field';
-
-import { useRequiredDocumentSigningAuthContext } from '../document-signing/document-signing-auth-provider';
 import { useRequiredEnvelopeSigningContext } from '../document-signing/envelope-signing-provider';
+import { useEnvelopeFieldActivation } from './use-envelope-field-activation';
+
+export const MOBILE_FOCUSED_FIELD_ELEMENT_ID = 'mobile-focused-field';
 
 type GenericLocalField = TEnvelope['fields'][number] & {
   recipient: Pick<Recipient, 'id' | 'name' | 'email' | 'signingStatus'>;
 };
 
 export const EnvelopeSignerPageRenderer = ({ pageData }: { pageData: PageRenderData }) => {
-  const { t, i18n } = useLingui();
+  const { i18n } = useLingui();
   const { currentEnvelopeItem, contentImages, setRenderError } = useCurrentEnvelopeRender();
-  const { sessionData } = useOptionalSession();
-
-  const { executeActionAuthProcedure } = useRequiredDocumentSigningAuthContext();
-  const { toast } = useToast();
   const analytics = useAnalytics();
+  const activateField = useEnvelopeFieldActivation();
 
   const {
     envelopeData,
@@ -64,33 +45,14 @@ export const EnvelopeSignerPageRenderer = ({ pageData }: { pageData: PageRenderD
     recipientFields,
     recipientFieldsRemaining,
     showPendingFieldTooltip,
-    signField: signFieldInternal,
-    email: emailState,
-    setEmail,
-    fullName: fullNameState,
-    setFullName,
-    signature: signatureState,
-    setSignature,
     selectedAssistantRecipientFields,
     selectedAssistantRecipient,
-    isDirectTemplate,
+    focusedFieldId,
+    setFocusedFieldId,
   } = useRequiredEnvelopeSigningContext();
-
-  // Note: We're using refs here due to the closure within the signField function.
-  const fullName = useRef(fullNameState);
-  const email = useRef(emailState);
-  const signature = useRef(signatureState);
-
-  useEffect(() => {
-    fullName.current = fullNameState;
-    email.current = emailState;
-    signature.current = signatureState;
-  }, [fullNameState, emailState, signatureState]);
 
   const cachedRenderFields = useRef<Map<number, Field & { signature?: Signature | null }>>(new Map());
   const prevShowPendingFieldTooltip = useRef(showPendingFieldTooltip);
-
-  const { onFieldSigned, onFieldUnsigned, onSignatureChanged } = useEmbedSigningContext() || {};
 
   const { stage, pageLayer, konvaContainer, unscaledViewport } = usePageRenderer(
     ({ stage, pageLayer }) => createPageCanvas(stage, pageLayer),
@@ -194,229 +156,19 @@ export const EnvelopeSignerPageRenderer = ({ pageData }: { pageData: PageRenderD
         return;
       }
 
-      let localEmail: string | null = email.current;
-      let localFullName: string | null = fullName.current;
-      let placeholderEmail: string | null = null;
-
-      if (recipient.role === RecipientRole.ASSISTANT) {
-        localEmail = selectedAssistantRecipient?.email || null;
-        localFullName = selectedAssistantRecipient?.name || null;
-      }
-
-      // Allows us let the user set a different email than their current logged in email.
-      if (isDirectTemplate) {
-        placeholderEmail = sessionData?.user?.email || email.current || recipient.email;
-
-        if (!placeholderEmail || placeholderEmail === DIRECT_TEMPLATE_RECIPIENT_EMAIL) {
-          placeholderEmail = null;
-        }
-      }
+      setFocusedFieldId(foundField.id);
 
       const loadingSpinnerGroup = createSpinner({
         fieldWidth,
         fieldHeight,
       });
 
-      const parsedFoundField = ZFullFieldSchema.parse(foundField);
-
-      match(parsedFoundField)
-        /**
-         * CHECKBOX FIELD.
-         */
-        .with({ type: FieldType.CHECKBOX }, (field) => {
-          const clickedCheckboxIndex = Number(target.getAttr('internalCheckboxIndex'));
-
-          if (Number.isNaN(clickedCheckboxIndex)) {
-            return;
-          }
-
-          void handleCheckboxFieldClick({ field, clickedCheckboxIndex })
-            .then(async (payload) => {
-              if (payload) {
-                fieldGroup.add(loadingSpinnerGroup);
-                await signField(field.id, payload);
-              }
-            })
-            .finally(() => {
-              loadingSpinnerGroup.destroy();
-            });
-        })
-        /**
-         * RADIO FIELD.
-         */
-        .with({ type: FieldType.RADIO }, (field) => {
-          const selectedRadioIndex = Number(target.getAttr('internalRadioIndex'));
-          const fieldCustomText = Number(field.customText);
-
-          if (Number.isNaN(selectedRadioIndex)) {
-            return;
-          }
-
-          fieldGroup.add(loadingSpinnerGroup);
-
-          // Uncheck the value if it's already pressed.
-          const value = field.inserted && selectedRadioIndex === fieldCustomText ? null : selectedRadioIndex;
-
-          void signField(field.id, {
-            type: FieldType.RADIO,
-            value,
-          }).finally(() => {
-            loadingSpinnerGroup.destroy();
-          });
-        })
-        /**
-         * NUMBER FIELD.
-         */
-        .with({ type: FieldType.NUMBER }, (field) => {
-          void handleNumberFieldClick({ field, number: null })
-            .then(async (payload) => {
-              if (payload) {
-                fieldGroup.add(loadingSpinnerGroup);
-                await signField(field.id, payload);
-              }
-            })
-            .finally(() => {
-              loadingSpinnerGroup.destroy();
-            });
-        })
-        /**
-         * TEXT FIELD.
-         */
-        .with({ type: FieldType.TEXT }, (field) => {
-          void handleTextFieldClick({ field, text: null })
-            .then(async (payload) => {
-              if (payload) {
-                fieldGroup.add(loadingSpinnerGroup);
-                await signField(field.id, payload);
-              }
-            })
-            .finally(() => {
-              loadingSpinnerGroup.destroy();
-            });
-        })
-        /**
-         * EMAIL FIELD.
-         */
-        .with({ type: FieldType.EMAIL }, (field) => {
-          void handleEmailFieldClick({ field, email: localEmail, placeholderEmail })
-            .then(async (payload) => {
-              if (payload) {
-                fieldGroup.add(loadingSpinnerGroup);
-                await signField(field.id, payload);
-              }
-
-              if (payload?.value) {
-                setEmail(payload.value);
-              }
-            })
-            .finally(() => {
-              loadingSpinnerGroup.destroy();
-            });
-        })
-        /**
-         * INITIALS FIELD.
-         */
-        .with({ type: FieldType.INITIALS }, (field) => {
-          const initials = localFullName ? extractFullInitials(localFullName) : null;
-
-          void handleInitialsFieldClick({ field, initials })
-            .then(async (payload) => {
-              if (payload) {
-                fieldGroup.add(loadingSpinnerGroup);
-                await signField(field.id, payload);
-              }
-            })
-            .finally(() => {
-              loadingSpinnerGroup.destroy();
-            });
-        })
-        /**
-         * NAME FIELD.
-         */
-        .with({ type: FieldType.NAME }, (field) => {
-          void handleNameFieldClick({ field, name: localFullName })
-            .then(async (payload) => {
-              if (payload) {
-                fieldGroup.add(loadingSpinnerGroup);
-                await signField(field.id, payload);
-              }
-
-              if (payload?.value) {
-                setFullName(payload.value);
-              }
-            })
-            .finally(() => {
-              loadingSpinnerGroup.destroy();
-            });
-        })
-        /**
-         * DROPDOWN FIELD.
-         */
-        .with({ type: FieldType.DROPDOWN }, (field) => {
-          void handleDropdownFieldClick({ field, text: null })
-            .then(async (payload) => {
-              if (payload) {
-                fieldGroup.add(loadingSpinnerGroup);
-                await signField(field.id, payload);
-              }
-            })
-            .finally(() => {
-              loadingSpinnerGroup.destroy();
-            });
-        })
-        /**
-         * DATE FIELD.
-         */
-        .with({ type: FieldType.DATE }, (field) => {
-          fieldGroup.add(loadingSpinnerGroup);
-
-          void signField(field.id, {
-            type: FieldType.DATE,
-            value: !field.inserted,
-          }).finally(() => {
-            loadingSpinnerGroup.destroy();
-          });
-        })
-        /**
-         * SIGNATURE FIELD.
-         */
-        .with({ type: FieldType.SIGNATURE }, (field) => {
-          void handleSignatureFieldClick({
-            field,
-            fullName: fullName.current,
-            signature: signature.current,
-            typedSignatureEnabled: envelope.documentMeta.typedSignatureEnabled,
-            uploadSignatureEnabled: envelope.documentMeta.uploadSignatureEnabled,
-            drawSignatureEnabled: envelope.documentMeta.drawSignatureEnabled,
-          })
-            .then(async (payload) => {
-              if (!payload) {
-                return;
-              }
-
-              fieldGroup.add(loadingSpinnerGroup);
-
-              if (payload.value) {
-                await executeActionAuthProcedure({
-                  onReauthFormSubmit: async (authOptions) => {
-                    await signField(field.id, payload, authOptions);
-
-                    loadingSpinnerGroup.destroy();
-                  },
-                  actionTarget: field.type,
-                });
-
-                setSignature(payload.value);
-                onSignatureChanged?.(payload.value);
-              } else {
-                await signField(field.id, payload);
-              }
-            })
-            .finally(() => {
-              loadingSpinnerGroup.destroy();
-            });
-        })
-        .exhaustive();
+      activateField({
+        field: foundField,
+        optionIndex: Number(target.getAttr('internalCheckboxIndex') ?? target.getAttr('internalRadioIndex')),
+        onSigningStart: () => fieldGroup.add(loadingSpinnerGroup),
+        onSigningEnd: () => loadingSpinnerGroup.destroy(),
+      });
     };
 
     fieldGroup.off('pointerdown');
@@ -502,42 +254,6 @@ export const EnvelopeSignerPageRenderer = ({ pageData }: { pageData: PageRenderD
     }
   };
 
-  const signField = async (fieldId: number, payload: TSignEnvelopeFieldValue, authOptions?: TRecipientActionAuth) => {
-    try {
-      const { inserted } = await signFieldInternal(fieldId, payload, authOptions);
-
-      // ?: The two callbacks below are used within the embedding context
-      if (inserted && onFieldSigned) {
-        const value = payload.value ? JSON.stringify(payload.value) : undefined;
-        const isBase64 = value ? isBase64Image(value) : undefined;
-
-        onFieldSigned({ fieldId, value, isBase64 });
-      }
-
-      if (!inserted && onFieldUnsigned) {
-        onFieldUnsigned({ fieldId });
-      }
-    } catch (err) {
-      console.error(err);
-
-      analytics.captureException(err, {
-        source: 'signing',
-        location: 'sign_field',
-        fieldType: payload.type,
-        recipientId: recipient.id,
-        envelopeId: envelope.id,
-      });
-
-      toast({
-        title: t`Error`,
-        description: t`An error occurred while signing the field.`,
-        variant: 'destructive',
-      });
-
-      throw err;
-    }
-  };
-
   // Direct templates are signed without being sent, so their contents are not
   // imprinted in the PDF yet and must still be rendered.
   const renderContents = () => {
@@ -612,6 +328,8 @@ export const EnvelopeSignerPageRenderer = ({ pageData }: { pageData: PageRenderD
     pageLayer.current.batchDraw();
   }, [selectedAssistantRecipient]);
 
+  const focusedPageField = localPageFields.find((field) => field.id === focusedFieldId);
+
   if (!currentEnvelopeItem) {
     return null;
   }
@@ -639,6 +357,20 @@ export const EnvelopeSignerPageRenderer = ({ pageData }: { pageData: PageRenderD
           showRecipientTooltip={true}
         />
       ))}
+
+      {focusedPageField && (
+        <div
+          id={MOBILE_FOCUSED_FIELD_ELEMENT_ID}
+          aria-hidden="true"
+          className="pointer-events-none absolute z-20 rounded-sm ring-2 ring-primary ring-offset-2 ring-offset-background lg:hidden"
+          style={{
+            left: `${Number(focusedPageField.positionX)}%`,
+            top: `${Number(focusedPageField.positionY)}%`,
+            width: `${Number(focusedPageField.width)}%`,
+            height: `${Number(focusedPageField.height)}%`,
+          }}
+        />
+      )}
 
       {/* The element Konva will inject it's canvas into. */}
       <div className="konva-container absolute inset-0 z-10 w-full" ref={konvaContainer}></div>

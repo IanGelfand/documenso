@@ -286,7 +286,7 @@ export const DocumentSigningPageViewV2 = () => {
               )}
 
               {/* Mobile widget - Additional padding to allow users to scroll */}
-              <div className="block pb-28 lg:hidden">
+              <div className="block pb-56 lg:hidden">
                 <DocumentSigningMobileWidget />
               </div>
 
